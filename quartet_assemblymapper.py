@@ -10,7 +10,7 @@ import quartet_util
                      
 ### MAIN PROGRAM ###
 def AssemblyMapper(args):
-    refgenomefile, qryfile, mincontiglength, minalignmentlength, minalignmentidentity, prefix, threads, aligner, nofilter, keep, groupcontig, chimera, plot, noplot, overwrite, nucmeroption, deltafilteroption, minimapoption, teclade, teminrepeattimes = args
+    refgenomefile, qryfile, mincontiglength, minalignmentlength, minalignmentidentity, minqrycov, prefix, threads, aligner, nofilter, keep, groupcontig, chimera, plot, noplot, overwrite, nucmeroption, deltafilteroption, minimapoption, teclade, teminrepeattimes = args
     
     # split scaffolds to contigs and remove short contigs
     print('[Info] Filtering contigs input...')
@@ -109,6 +109,8 @@ def AssemblyMapper(args):
                 if float(alignlen) < minalignmentlength:
                     continue
                 if float(match) / float(alignlen) < minalignmentidentity:
+                    continue
+                if float(alignlen) / float(qrylen) < minqrycov:
                     continue
                 if f'{refid}#{qryid}' not in allAlignment:
                     alignment = {'refid': refid, 'qryid': qryid, 'weight': 0, 'sumposition': 0, 'sumpositive': 0, 'sumnegative': 0, 'score': 0, 'refstart': 0, 'refend': 0}
@@ -318,6 +320,7 @@ if __name__ == '__main__':
     parser.add_argument('-c', dest='min_contig_length', type=int, default=50000, help='Contigs shorter than INT (bp) will be removed, default: 50000')
     parser.add_argument('-l', dest='min_alignment_length', type=int, default=10000, help='The min alignment length to be select (bp), default: 10000')
     parser.add_argument('-i', dest='min_alignment_identity', type=float, default=90, help='The min alignment identity to be select (%%), default: 90')
+    parser.add_argument('--min-qry-cov', dest='min_qry_cov', type=float, default=0, help='The min query coverage to be select (fraction), default: 0')
     parser.add_argument('-p', dest='prefix', default='quarTeT', help='The prefix used on generated files, default: quarTeT')
     parser.add_argument('-t', dest='threads', default='1', help='Use number of threads, default: 1')
     parser.add_argument('-a', dest='aligner', choices=['minimap2', 'unimap', 'mummer'], default='minimap2', help='Specify alignment program (support minimap2, unimap and mummer), default: minimap2')
@@ -342,6 +345,10 @@ if __name__ == '__main__':
     minalignmentidentity = float(parser.parse_args().min_alignment_identity) / 100
     if minalignmentidentity < 0 or minalignmentidentity > 1:
         print('[Error] min_alignment_identity should be within 0~100.')
+        sys.exit(0)
+    minqrycov = float(parser.parse_args().min_qry_cov)
+    if minqrycov < 0 or minqrycov > 1:
+        print('[Error] min_qry_cov should be within 0~1.')
         sys.exit(0)
     prefix = parser.parse_args().prefix
     threads = parser.parse_args().threads
@@ -368,7 +375,7 @@ if __name__ == '__main__':
         minimapoption = parser.parse_args().minimapoption + f' -t {threads}'
     
     # run
-    args = [refgenomefile, qryfile, mincontiglength, minalignmentlength, minalignmentidentity, 
+    args = [refgenomefile, qryfile, mincontiglength, minalignmentlength, minalignmentidentity, minqrycov,
             prefix, threads, aligner, nofilter, keep, groupcontig, chimera, plot, noplot, overwrite, nucmeroption, deltafilteroption, minimapoption, teclade, teminrepeattimes]
-    print(f'[Info] Paramater: refgenomefile={refgenomefile}, qryfile={qryfile}, mincontiglength={mincontiglength}, minalignmentlength={minalignmentlength}, minalignmentidentity={minalignmentidentity}, prefix={prefix}, threads={threads}, aligner={aligner}, nofilter={nofilter}, keep={keep}, groupcontig={groupcontig}, chimera={chimera}, plot={plot}, noplot={noplot}, overwrite={overwrite}, nucmeroption={nucmeroption}, deltafilteroption={deltafilteroption}, minimapoption={minimapoption}, teclade={teclade}, teminrepeattimes={teminrepeattimes}')  
+    print(f'[Info] Paramater: refgenomefile={refgenomefile}, qryfile={qryfile}, mincontiglength={mincontiglength}, minalignmentlength={minalignmentlength}, minalignmentidentity={minalignmentidentity}, minqrycov={minqrycov}, prefix={prefix}, threads={threads}, aligner={aligner}, nofilter={nofilter}, keep={keep}, groupcontig={groupcontig}, chimera={chimera}, plot={plot}, noplot={noplot}, overwrite={overwrite}, nucmeroption={nucmeroption}, deltafilteroption={deltafilteroption}, minimapoption={minimapoption}, teclade={teclade}, teminrepeattimes={teminrepeattimes}')  
     quartet_util.run(AssemblyMapper, args)
