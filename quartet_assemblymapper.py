@@ -27,6 +27,16 @@ def AssemblyMapper(args):
         if inclusive:
             return sum((end - start + 1) for start, end in merged)
         return sum((end - start) for start, end in merged)
+
+    def _fasta_ids(fasta_path):
+        if not os.path.exists(fasta_path):
+            return []
+        ids = []
+        with open(fasta_path, 'r') as f:
+            for line in f:
+                if line.startswith('>'):
+                    ids.append(line[1:].strip().split()[0])
+        return ids
     
     # split scaffolds to contigs and remove short contigs
     print('[Info] Filtering contigs input...')
@@ -95,6 +105,8 @@ def AssemblyMapper(args):
     # get all alignments
     allAlignment = {}
     qryIntervals = {}
+    # For reporting min-qry-cov results per contig
+    covReport = {}
     doplot = not noplot
     if aligner == 'mummer':
         coordsfile = quartet_util.mummer(refgenomefile, contigfile, prefix, 'contig_map_ref', nucmeroption, deltafilteroption, doplot, overwrite)
@@ -105,6 +117,17 @@ def AssemblyMapper(args):
                     continue
                 refstart, refend, qrystart, qryend, reflen, qrylen, identity, refid, qryid = line.split()
                 alignlen = abs(int(qryend) - int(qrystart)) + 1
+                if qrycovmode == 'segment':
+                    cov = float(alignlen) / float(qrylen)
+                    prev = covReport.get(qryid)
+                    if prev is None or cov > prev['best_cov']:
+                        covReport[qryid] = {
+                            'qrylen': int(qrylen),
+                            'best_cov': cov,
+                            'covered_bp': int(alignlen),
+                            'best_refid': refid,
+                            'mode': 'segment',
+                        }
                 if qrycovmode == 'segment' and float(alignlen) / float(qrylen) < minqrycov:
                     continue
                 if f'{refid}#{qryid}' not in allAlignment:
@@ -142,6 +165,17 @@ def AssemblyMapper(args):
                     continue
                 if float(match) / float(alignlen) < minalignmentidentity:
                     continue
+                if qrycovmode == 'segment':
+                    cov = float(alignlen) / float(qrylen)
+                    prev = covReport.get(qryid)
+                    if prev is None or cov > prev['best_cov']:
+                        covReport[qryid] = {
+                            'qrylen': int(qrylen),
+                            'best_cov': cov,
+                            'covered_bp': int(alignlen),
+                            'best_refid': refid,
+                            'mode': 'segment',
+                        }
                 if qrycovmode == 'segment' and float(alignlen) / float(qrylen) < minqrycov:
                     continue
                 if f'{refid}#{qryid}' not in allAlignment:
@@ -173,8 +207,38 @@ def AssemblyMapper(args):
                 continue
             qrylen = qryIntervals[key]['qrylen']
             covered = _union_len(qryIntervals[key]['intervals'], inclusive=inclusive)
+            # update per-contig report with the best total coverage among refs
+            refid, qryid = key.split('#', 1)
+            cov = float(covered) / float(qrylen) if qrylen > 0 else 0
+            prev = covReport.get(qryid)
+            if prev is None or cov > prev['best_cov']:
+                covReport[qryid] = {
+                    'qrylen': int(qrylen),
+                    'best_cov': cov,
+                    'covered_bp': int(covered),
+                    'best_refid': refid,
+                    'mode': 'total',
+                }
             if qrylen <= 0 or float(covered) / float(qrylen) < minqrycov:
                 del allAlignment[key]
+
+    # write min-qry-cov report (only when threshold is actually used)
+    if minqrycov > 0:
+        report_path = f'tmp/{prefix}.min_qry_cov.report.tsv'
+        contig_ids = _fasta_ids(f'tmp/{prefix}.contigsdict.fasta')
+        with open(report_path, 'w') as w:
+            w.write(f'# min_qry_cov={minqrycov}\n')
+            w.write(f'# qry_cov_mode={qrycovmode}\n')
+            w.write('# ContigID\tQueryLength\tCoveredBp\tCoverage\tPass\tBestRefID\tNote\n')
+            for cid in sorted(contig_ids):
+                info = covReport.get(cid)
+                if info is None:
+                    w.write(f'{cid}\tNA\t0\t0\tFail\tNA\tNoAlignmentRecord\n')
+                    continue
+                cov = info['best_cov']
+                passed = 'Pass' if cov >= minqrycov else 'Fail'
+                w.write(f"{cid}\t{info['qrylen']}\t{info['covered_bp']}\t{cov:.6f}\t{passed}\t{info['best_refid']}\tOK\n")
+        print(f'[Output] min-qry-cov report write to: {report_path}')
     if allAlignment == {}:
         print(f'[Error] All alignments are filtered. Recommended to adjust filter arguments.')
         sys.exit(0)
