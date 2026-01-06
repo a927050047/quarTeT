@@ -87,6 +87,9 @@ def AssemblyMapper(args):
                 if len(line.split()) != 9:
                     continue
                 refstart, refend, qrystart, qryend, reflen, qrylen, identity, refid, qryid = line.split()
+                alignlen = abs(int(qryend) - int(qrystart)) + 1
+                if float(alignlen) / float(qrylen) < minqrycov:
+                    continue
                 if f'{refid}#{qryid}' not in allAlignment:
                     alignment = {'refid': refid, 'qryid': qryid, 'weight': 0, 'sumposition': 0, 'sumpositive': 0, 'sumnegative': 0, 'score': 0}
                 else:
