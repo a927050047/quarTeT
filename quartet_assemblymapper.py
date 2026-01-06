@@ -10,7 +10,23 @@ import quartet_util
                      
 ### MAIN PROGRAM ###
 def AssemblyMapper(args):
-    refgenomefile, qryfile, mincontiglength, minalignmentlength, minalignmentidentity, minqrycov, prefix, threads, aligner, nofilter, keep, groupcontig, chimera, plot, noplot, overwrite, nucmeroption, deltafilteroption, minimapoption, teclade, teminrepeattimes = args
+    refgenomefile, qryfile, mincontiglength, minalignmentlength, minalignmentidentity, minqrycov, qrycovmode, prefix, threads, aligner, nofilter, keep, groupcontig, chimera, plot, noplot, overwrite, nucmeroption, deltafilteroption, minimapoption, teclade, teminrepeattimes = args
+
+    def _union_len(intervals, inclusive=False):
+        if not intervals:
+            return 0
+        merged = []
+        for start, end in sorted(intervals, key=lambda x: (x[0], x[1])):
+            if not merged:
+                merged.append([start, end])
+                continue
+            if start <= merged[-1][1] + (1 if inclusive else 0):
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        if inclusive:
+            return sum((end - start + 1) for start, end in merged)
+        return sum((end - start) for start, end in merged)
     
     # split scaffolds to contigs and remove short contigs
     print('[Info] Filtering contigs input...')
@@ -78,6 +94,7 @@ def AssemblyMapper(args):
 
     # get all alignments
     allAlignment = {}
+    qryIntervals = {}
     doplot = not noplot
     if aligner == 'mummer':
         coordsfile = quartet_util.mummer(refgenomefile, contigfile, prefix, 'contig_map_ref', nucmeroption, deltafilteroption, doplot, overwrite)
@@ -88,12 +105,24 @@ def AssemblyMapper(args):
                     continue
                 refstart, refend, qrystart, qryend, reflen, qrylen, identity, refid, qryid = line.split()
                 alignlen = abs(int(qryend) - int(qrystart)) + 1
-                if float(alignlen) / float(qrylen) < minqrycov:
+                if qrycovmode == 'segment' and float(alignlen) / float(qrylen) < minqrycov:
                     continue
                 if f'{refid}#{qryid}' not in allAlignment:
-                    alignment = {'refid': refid, 'qryid': qryid, 'weight': 0, 'sumposition': 0, 'sumpositive': 0, 'sumnegative': 0, 'score': 0}
+                    alignment = {'refid': refid, 'qryid': qryid, 'weight': 0, 'sumposition': 0, 'sumpositive': 0, 'sumnegative': 0, 'score': 0, 'refstart': 999999999, 'refend': 0}
                 else:
                     alignment = allAlignment[f'{refid}#{qryid}']
+                # track ref coordinates for downstream chimera output
+                rstart = min(int(refstart), int(refend))
+                rend = max(int(refstart), int(refend))
+                if rstart < alignment['refstart']:
+                    alignment['refstart'] = rstart
+                if rend > alignment['refend']:
+                    alignment['refend'] = rend
+                # track query covered intervals for total-coverage mode
+                qstart = min(int(qrystart), int(qryend))
+                qend = max(int(qrystart), int(qryend))
+                qryIntervals.setdefault(f'{refid}#{qryid}', {'qrylen': int(qrylen), 'intervals': []})
+                qryIntervals[f'{refid}#{qryid}']['intervals'].append((qstart, qend))
                 alignment['weight'] += 1
                 alignment['sumposition'] += int(refstart)
                 alignment['score'] += float(identity) * float(qrylen)
@@ -113,12 +142,15 @@ def AssemblyMapper(args):
                     continue
                 if float(match) / float(alignlen) < minalignmentidentity:
                     continue
-                if float(alignlen) / float(qrylen) < minqrycov:
+                if qrycovmode == 'segment' and float(alignlen) / float(qrylen) < minqrycov:
                     continue
                 if f'{refid}#{qryid}' not in allAlignment:
                     alignment = {'refid': refid, 'qryid': qryid, 'weight': 0, 'sumposition': 0, 'sumpositive': 0, 'sumnegative': 0, 'score': 0, 'refstart': 0, 'refend': 0}
                 else:
                     alignment = allAlignment[f'{refid}#{qryid}']
+                # track query covered intervals for total-coverage mode
+                qryIntervals.setdefault(f'{refid}#{qryid}', {'qrylen': int(qrylen), 'intervals': []})
+                qryIntervals[f'{refid}#{qryid}']['intervals'].append((int(qrystart), int(qryend)))
                 alignment['weight'] += int(alignlen)
                 alignment['sumposition'] += (int(refstart) + 1) * int(alignlen)
                 alignment['score'] += float(match)
@@ -131,6 +163,18 @@ def AssemblyMapper(args):
                 if alignment['refend'] < int(refend):
                     alignment['refend'] = int(refend)
                 allAlignment[f'{refid}#{qryid}'] = alignment
+
+    # apply query coverage filter in total-coverage mode (union of query intervals per ref#qry)
+    if qrycovmode == 'total' and minqrycov > 0:
+        inclusive = True if aligner == 'mummer' else False
+        for key in list(allAlignment.keys()):
+            if key not in qryIntervals:
+                del allAlignment[key]
+                continue
+            qrylen = qryIntervals[key]['qrylen']
+            covered = _union_len(qryIntervals[key]['intervals'], inclusive=inclusive)
+            if qrylen <= 0 or float(covered) / float(qrylen) < minqrycov:
+                del allAlignment[key]
     if allAlignment == {}:
         print(f'[Error] All alignments are filtered. Recommended to adjust filter arguments.')
         sys.exit(0)
@@ -324,6 +368,7 @@ if __name__ == '__main__':
     parser.add_argument('-l', dest='min_alignment_length', type=int, default=10000, help='The min alignment length to be select (bp), default: 10000')
     parser.add_argument('-i', dest='min_alignment_identity', type=float, default=90, help='The min alignment identity to be select (%%), default: 90')
     parser.add_argument('--min-qry-cov', dest='min_qry_cov', type=float, default=0, help='The min query coverage to be select (fraction), default: 0')
+    parser.add_argument('--qry-cov-mode', dest='qry_cov_mode', choices=['segment', 'total'], default='segment', help='How to calculate query coverage for --min-qry-cov: segment=each alignment record, total=union of query intervals per ref-query pair, default: segment')
     parser.add_argument('-p', dest='prefix', default='quarTeT', help='The prefix used on generated files, default: quarTeT')
     parser.add_argument('-t', dest='threads', default='1', help='Use number of threads, default: 1')
     parser.add_argument('-a', dest='aligner', choices=['minimap2', 'unimap', 'mummer'], default='minimap2', help='Specify alignment program (support minimap2, unimap and mummer), default: minimap2')
@@ -353,6 +398,7 @@ if __name__ == '__main__':
     if minqrycov < 0 or minqrycov > 1:
         print('[Error] min_qry_cov should be within 0~1.')
         sys.exit(0)
+    qrycovmode = parser.parse_args().qry_cov_mode
     prefix = parser.parse_args().prefix
     threads = parser.parse_args().threads
     aligner = parser.parse_args().aligner
@@ -378,7 +424,7 @@ if __name__ == '__main__':
         minimapoption = parser.parse_args().minimapoption + f' -t {threads}'
     
     # run
-    args = [refgenomefile, qryfile, mincontiglength, minalignmentlength, minalignmentidentity, minqrycov,
-            prefix, threads, aligner, nofilter, keep, groupcontig, chimera, plot, noplot, overwrite, nucmeroption, deltafilteroption, minimapoption, teclade, teminrepeattimes]
-    print(f'[Info] Parameter: refgenomefile={refgenomefile}, qryfile={qryfile}, mincontiglength={mincontiglength}, minalignmentlength={minalignmentlength}, minalignmentidentity={minalignmentidentity}, minqrycov={minqrycov}, prefix={prefix}, threads={threads}, aligner={aligner}, nofilter={nofilter}, keep={keep}, groupcontig={groupcontig}, chimera={chimera}, plot={plot}, noplot={noplot}, overwrite={overwrite}, nucmeroption={nucmeroption}, deltafilteroption={deltafilteroption}, minimapoption={minimapoption}, teclade={teclade}, teminrepeattimes={teminrepeattimes}')  
+    args = [refgenomefile, qryfile, mincontiglength, minalignmentlength, minalignmentidentity, minqrycov, qrycovmode,
+        prefix, threads, aligner, nofilter, keep, groupcontig, chimera, plot, noplot, overwrite, nucmeroption, deltafilteroption, minimapoption, teclade, teminrepeattimes]
+    print(f'[Info] Parameter: refgenomefile={refgenomefile}, qryfile={qryfile}, mincontiglength={mincontiglength}, minalignmentlength={minalignmentlength}, minalignmentidentity={minalignmentidentity}, minqrycov={minqrycov}, qrycovmode={qrycovmode}, prefix={prefix}, threads={threads}, aligner={aligner}, nofilter={nofilter}, keep={keep}, groupcontig={groupcontig}, chimera={chimera}, plot={plot}, noplot={noplot}, overwrite={overwrite}, nucmeroption={nucmeroption}, deltafilteroption={deltafilteroption}, minimapoption={minimapoption}, teclade={teclade}, teminrepeattimes={teminrepeattimes}')  
     quartet_util.run(AssemblyMapper, args)
